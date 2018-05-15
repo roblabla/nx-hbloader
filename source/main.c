@@ -1,6 +1,9 @@
 #include <switch.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define MODULE_HBL 347
 
@@ -47,6 +50,24 @@ void __appInit(void)
         fatalSimple(MAKERESULT(MODULE_HBL, 2));
 
     fsdevMountSdmc();
+#if 0
+#define SOCK_BUFFERSIZE 65536
+    static const SocketInitConfig socketInitConfig = {
+        .bsdsockets_version = 1,
+
+        .tcp_tx_buf_size        = 8 * SOCK_BUFFERSIZE,
+        .tcp_rx_buf_size        = 8 * SOCK_BUFFERSIZE,
+        .tcp_tx_buf_max_size    = 16 * SOCK_BUFFERSIZE,
+        .tcp_rx_buf_max_size    = 16 * SOCK_BUFFERSIZE,
+
+        .udp_tx_buf_size = 0x2400,
+        .udp_rx_buf_size = 0xA500,
+
+        .sb_efficiency = 8,
+    };
+
+    rc = socketInitialize(&socketInitConfig);
+#endif
 }
 
 void __appExit(void)
@@ -58,6 +79,9 @@ void __appExit(void)
 
 static void*  g_heapAddr;
 static size_t g_heapSize;
+
+
+static char g_log[1024 * 1024] = {0};
 
 void setupHbHeap(void)
 {
@@ -163,14 +187,49 @@ void getOwnProcessHandle(void)
     smExit();
 }
 
+#if 0
+#define make_ip(a, b, c, d) ((a) | ((b) << 8) | ((c) << 16) | ((d) << 24))
+
+const struct sockaddr_in server_addr =
+{
+	.sin_family = AF_INET,
+	.sin_port = 0xAF0B, // 2991 in big endian
+	.sin_addr = {
+		.s_addr = make_ip(00, 000, 00, 000)
+	}
+};
+#endif
+
 void loadNro(void)
 {
     NroHeader* header = NULL;
     size_t rw_size=0;
     Result rc=0;
 
+
     svcSleepThread(1000000000);//Wait for sm-sysmodule to handle closing the sm session from this process. Without this delay smInitialize will fail once eventually used later.
-    //TODO: Lower the above delay-value?
+
+#if 0
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+        connect(fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    }
+
+
+    if (g_log[0] != '\0') {
+        send(fd, "LOG:\n", 5, 0);
+        send(fd, g_log, strnlen(g_log, sizeof(g_log)), 0);
+    }
+#endif
+
+    if (g_log[0] != '\0') {
+        FILE *runf = fopen("sdmc:/runlog.txt", "a");
+        if (runf == NULL)
+            fatalSimple(MAKERESULT(MODULE_HBL, 55));
+        if (fwrite(g_log, strnlen(g_log, sizeof(g_log)), 1, runf) != 1)
+            fatalSimple(MAKERESULT(MODULE_HBL, 56));
+        fclose(runf);
+    }
 
     memcpy((u8*)armGetTls() + 0x100, g_savedTls, 0x100);
 
@@ -309,9 +368,12 @@ void loadNro(void)
         { EntryType_Argv,                 0, {0, 0} },
         { EntryType_NextLoadPath,         0, {0, 0} },
         { EntryType_LastLoadResult,       0, {0, 0} },
+        { 51,                             0, {(u64)g_log, sizeof(g_log)} },
         { EntryType_SyscallAvailableHint, 0, {0xffffffffffffffff, 0x1fc00000007ffff} },
         { EntryType_EndOfList,            0, {0, 0} }
     };
+
+    memset(g_log, 0, sizeof(g_log));
 
     // MainThreadHandle
     entries[0].Value[0] = envGetMainThreadHandle();
